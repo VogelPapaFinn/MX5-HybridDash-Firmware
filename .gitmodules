@@ -1,3 +1,8 @@
+[submodule "esp-idf"]
+	path = esp-idf
+	url = https://github.com/VogelPapaFinn/MX5-HybridDash-espidf.git
+	branch = release/v5.4
 [submodule "components/lvgl"]
 	path = components/lvgl
-	url = https://github.com/lvgl/lvgl/tree/7f07a129e8d77f4984fff8e623fd5be18ff42e74
+	url = https://github.com/lvgl/lvgl.git
+	branch = release/v9.2
