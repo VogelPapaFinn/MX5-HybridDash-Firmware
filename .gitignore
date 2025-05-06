@@ -1,0 +1,5 @@
+# Firmware Folder
+build/*
+sdkconfig.old
+managed_components/
+lib/
