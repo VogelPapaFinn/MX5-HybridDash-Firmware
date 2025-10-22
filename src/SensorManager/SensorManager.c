@@ -605,10 +605,10 @@ void sensorManagerUpdateSpeed(void) {
     // Is it >1
     if (speed_ < 0) speed_ = 0;
 
-    if (oldSpeed != speed_) {
+    if (oldSpeed != speed_ || 1) {
         // Callback
         if (speedCallback_ != NULL) {
-            //speedCallback_((void *) speed_); Problem hier
+            speedCallback_((void *) speed_);// Problem hier
         }
 
         // Logging

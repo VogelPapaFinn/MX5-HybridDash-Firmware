@@ -9,7 +9,9 @@
 
 // General display stuff
 const size_t drawBufferSize_ = GUI_LCD_RES * GUI_LCD_RES * 2;
+esp_lcd_panel_dev_config_t lcdPanelConfig_;
 SemaphoreHandle_t semaphoreLvTaskHandle_;
+SemaphoreHandle_t semaphoreLvFlushHandle_;
 
 // Display 1 management stuff
 esp_lcd_panel_io_handle_t lcdPanelIoHandle1_ = NULL;
@@ -114,14 +116,14 @@ void createAndShowTempScreen(lv_display_t *display);
 void IRAM_ATTR taskUpdateLvgl(void *params) {
     // ReSharper disable once CppDFAEndlessLoop
     while (1) {
-        // Wait 10ms
-        vTaskDelay(pdMS_TO_TICKS(10));
-
         // Try to get the semaphore mutex
         if (xSemaphoreTake(semaphoreLvTaskHandle_, portMAX_DELAY) == pdTRUE) {
             // Then run the lvgl task handler
-            lv_task_handler();
+            lv_timer_handler();
             xSemaphoreGive(semaphoreLvTaskHandle_);
+
+            // Wait 10ms
+            vTaskDelay(pdMS_TO_TICKS(10));
         }
     }
 }
@@ -181,7 +183,7 @@ bool initDisplays(void) {
     const esp_lcd_panel_io_spi_config_t lcdPanel1IoConfig = {
             .dc_gpio_num = GUI_GPIO_LCD_DC,
             .cs_gpio_num = GUI_GPIO_LCD1_CS,
-            .pclk_hz = 60000000,
+            .pclk_hz = GUI_SPI_SPEED,
             .lcd_cmd_bits = 8,
             .lcd_param_bits = 8,
             .spi_mode = 0,
@@ -189,7 +191,7 @@ bool initDisplays(void) {
     };
 
     // Then attach it to the SPI bus
-    if (esp_lcd_new_panel_io_spi((esp_lcd_spi_bus_handle_t) GUI_LCD_SPI_HOST, &lcdPanel1IoConfig, &lcdPanelIoHandle1_)) { return false; }
+    if (esp_lcd_new_panel_io_spi((esp_lcd_spi_bus_handle_t) GUI_LCD_SPI_HOST, &lcdPanel1IoConfig, &lcdPanelIoHandle1_) != ESP_OK) { return false; }
 
     // Then create the panel config
     const esp_lcd_panel_dev_config_t lcdPanelConfig = {
@@ -197,6 +199,9 @@ bool initDisplays(void) {
             .rgb_ele_order = LCD_RGB_ELEMENT_ORDER_BGR,
             .bits_per_pixel = 16,
     };
+    lcdPanelConfig_.reset_gpio_num = GUI_GPIO_LCD_RST;
+    lcdPanelConfig_.rgb_ele_order = LCD_RGB_ELEMENT_ORDER_BGR;
+    lcdPanelConfig_.bits_per_pixel = 16;
 
     // Then activate it
     ESP_ERROR_CHECK(esp_lcd_new_panel_gc9a01(lcdPanelIoHandle1_, &lcdPanelConfig, &lcdPanelHandle1_));
@@ -204,6 +209,7 @@ bool initDisplays(void) {
     ESP_ERROR_CHECK(esp_lcd_panel_init(lcdPanelHandle1_));
     ESP_ERROR_CHECK(esp_lcd_panel_invert_color(lcdPanelHandle1_, true));
     ESP_ERROR_CHECK(esp_lcd_panel_mirror(lcdPanelHandle1_, true, false));
+    ESP_ERROR_CHECK(esp_lcd_panel_disp_on_off(lcdPanelHandle1_, true));
 
     /*
      * --- --- SECOND DISPLAY
@@ -213,7 +219,7 @@ bool initDisplays(void) {
     const esp_lcd_panel_io_spi_config_t lcdPanel2IoConfig = {
             .dc_gpio_num = GUI_GPIO_LCD_DC,
             .cs_gpio_num = GUI_GPIO_LCD2_CS,
-            .pclk_hz = 60000000,
+            .pclk_hz = GUI_SPI_SPEED,
             .lcd_cmd_bits = 8,
             .lcd_param_bits = 8,
             .spi_mode = 0,
@@ -224,7 +230,7 @@ bool initDisplays(void) {
     if (esp_lcd_new_panel_io_spi((esp_lcd_spi_bus_handle_t) GUI_LCD_SPI_HOST, &lcdPanel2IoConfig, &lcdPanelIoHandle2_)) { return false; }
 
     // Then activate it
-    ESP_ERROR_CHECK(esp_lcd_new_panel_gc9a01(lcdPanelIoHandle2_, &lcdPanelConfig, &lcdPanelHandle2_));
+    ESP_ERROR_CHECK(esp_lcd_new_panel_gc9a01(lcdPanelIoHandle2_, &lcdPanelConfig_, &lcdPanelHandle2_));
     ESP_ERROR_CHECK(esp_lcd_panel_reset(lcdPanelHandle2_));
     ESP_ERROR_CHECK(esp_lcd_panel_init(lcdPanelHandle2_));
     ESP_ERROR_CHECK(esp_lcd_panel_invert_color(lcdPanelHandle2_, true));
@@ -238,7 +244,7 @@ bool initDisplays(void) {
     const esp_lcd_panel_io_spi_config_t lcdPanel3IoConfig = {
             .dc_gpio_num = GUI_GPIO_LCD_DC,
             .cs_gpio_num = GUI_GPIO_LCD3_CS,
-            .pclk_hz = 60000000,
+            .pclk_hz = GUI_SPI_SPEED,
             .lcd_cmd_bits = 8,
             .lcd_param_bits = 8,
             .spi_mode = 0,
@@ -249,7 +255,7 @@ bool initDisplays(void) {
     if (esp_lcd_new_panel_io_spi((esp_lcd_spi_bus_handle_t) GUI_LCD_SPI_HOST, &lcdPanel3IoConfig, &lcdPanelIoHandle3_)) { return false; }
 
     // Then activate it
-    ESP_ERROR_CHECK(esp_lcd_new_panel_gc9a01(lcdPanelIoHandle3_, &lcdPanelConfig, &lcdPanelHandle3_));
+    ESP_ERROR_CHECK(esp_lcd_new_panel_gc9a01(lcdPanelIoHandle3_, &lcdPanelConfig_, &lcdPanelHandle3_));
     ESP_ERROR_CHECK(esp_lcd_panel_reset(lcdPanelHandle3_));
     ESP_ERROR_CHECK(esp_lcd_panel_init(lcdPanelHandle3_));
     ESP_ERROR_CHECK(esp_lcd_panel_invert_color(lcdPanelHandle3_, true));
@@ -264,7 +270,11 @@ void flushToDisplay1(lv_display_t *display, const lv_area_t *area, uint8_t *pxMa
     lv_draw_sw_rgb565_swap(pxMap, (area->x2 + 1 - area->x1) * (area->y2 + 1 - area->y1));
 
     // Then draw the bitmap to the physical display (+1 needed, otherwise the image is distorted)
-    esp_lcd_panel_draw_bitmap(lcdPanelHandle1_, area->x1, area->y1, area->x2 + 1, area->y2 + 1, pxMap);
+    if (xSemaphoreTake(semaphoreLvFlushHandle_, portMAX_DELAY) == pdTRUE) {
+        esp_lcd_panel_draw_bitmap(lcdPanelHandle1_, area->x1, area->y1, area->x2 + 1, area->y2 + 1, pxMap);
+        vTaskDelay(pdMS_TO_TICKS(GUI_DELAY_BETWEEN_DRAWING_MS));
+        xSemaphoreGive(semaphoreLvFlushHandle_);
+    }
     lv_display_flush_ready(display);
     firstFrameDrawnD1_ = true;
 }
@@ -274,7 +284,11 @@ void flushToDisplay2(lv_display_t *display, const lv_area_t *area, uint8_t *pxMa
     lv_draw_sw_rgb565_swap(pxMap, (area->x2 + 1 - area->x1) * (area->y2 + 1 - area->y1));
 
     // Then draw the bitmap to the physical display (+1 needed, otherwise the image is distorted)
-    esp_lcd_panel_draw_bitmap(lcdPanelHandle2_, area->x1, area->y1, area->x2 + 1, area->y2 + 1, pxMap);
+    if (xSemaphoreTake(semaphoreLvFlushHandle_, portMAX_DELAY) == pdTRUE) {
+        esp_lcd_panel_draw_bitmap(lcdPanelHandle2_, area->x1, area->y1, area->x2 + 1, area->y2 + 1, pxMap);
+        vTaskDelay(pdMS_TO_TICKS(GUI_DELAY_BETWEEN_DRAWING_MS));
+        xSemaphoreGive(semaphoreLvFlushHandle_);
+    }
     lv_display_flush_ready(display);
     firstFrameDrawnD2_ = true;
 }
@@ -284,7 +298,11 @@ void flushToDisplay3(lv_display_t *display, const lv_area_t *area, uint8_t *pxMa
     lv_draw_sw_rgb565_swap(pxMap, (area->x2 + 1 - area->x1) * (area->y2 + 1 - area->y1));
 
     // Then draw the bitmap to the physical display (+1 needed, otherwise the image is distorted)
-    esp_lcd_panel_draw_bitmap(lcdPanelHandle3_, area->x1, area->y1, area->x2 + 1, area->y2 + 1, pxMap);
+    if (xSemaphoreTake(semaphoreLvFlushHandle_, portMAX_DELAY) == pdTRUE) {
+        esp_lcd_panel_draw_bitmap(lcdPanelHandle3_, area->x1, area->y1, area->x2 + 1, area->y2 + 1, pxMap);
+        vTaskDelay(pdMS_TO_TICKS(GUI_DELAY_BETWEEN_DRAWING_MS));
+        xSemaphoreGive(semaphoreLvFlushHandle_);
+    }
     lv_display_flush_ready(display);
     firstFrameDrawnD3_ = true;
 }
@@ -332,6 +350,11 @@ bool initLvgl(void) {
     lv_display_set_color_format(display2_, LV_COLOR_FORMAT_RGB565);
     lv_display_set_color_format(display3_, LV_COLOR_FORMAT_RGB565);
 
+    // Rotate the displays
+    //lv_display_set_rotation(display3_, LV_DISPLAY_ROTATION_180);
+    //lv_display_set_rotation(display2_, LV_DISPLAY_ROTATION_180);
+    //lv_display_set_rotation(display1_, LV_DISPLAY_ROTATION_180);
+
     // Set the callback function, to draw to the physical displays
     lv_display_set_flush_cb(display1_, flushToDisplay1);
     lv_display_set_flush_cb(display2_, flushToDisplay2);
@@ -339,14 +362,6 @@ bool initLvgl(void) {
 
     // Set tick interface
     lv_tick_set_cb(xTaskGetTickCount);
-
-    // Then start the lvgl task handler task on core 1
-    if (xTaskCreatePinnedToCore(taskUpdateLvgl, "taskUpdateLvgl", 10000, NULL, 0, NULL, 1) != pdPASS) {
-        // Logging
-        loggerCritical("Failed to create task: \"taskUpdateLvgl\"!");
-
-        return false;
-    }
 
     // Everything was successful
     return true;
@@ -588,6 +603,13 @@ bool guiInit(void) {
     // Create the Semaphore needed for the lvgl task handler
     semaphoreLvTaskHandle_ = xSemaphoreCreateMutex();
 
+    // Create the Semaphore needed for the drawing
+    semaphoreLvFlushHandle_ = xSemaphoreCreateMutex();
+
+    ESP_ERROR_CHECK(esp_lcd_panel_disp_on_off(lcdPanelHandle1_, true));
+    ESP_ERROR_CHECK(esp_lcd_panel_disp_on_off(lcdPanelHandle2_, true));
+    ESP_ERROR_CHECK(esp_lcd_panel_disp_on_off(lcdPanelHandle3_, true));
+
     // Initialize LVGL
     if (!initLvgl()) {
         // Logging
@@ -605,9 +627,17 @@ bool guiInit(void) {
     xTaskCreate(&taskWaitForFirstFrameDrawn, "taskWaitForFirstFrameDrawn", 2024, NULL, 0, NULL);
 
     // Build the screens and put them on the displays
-    createAndShowSpeedometerScreen(display2_);
-    createAndShowRpmScreen(display3_);
+    createAndShowSpeedometerScreen(display3_);
+    createAndShowRpmScreen(display2_);
     createAndShowTempScreen(display1_);
+
+    // Then start the lvgl task handler task on core 0 - on core 1 the application crashes in the createAndShowTempScreen function
+    if (xTaskCreate(taskUpdateLvgl, "taskUpdateLvgl", 10000, NULL, 0, NULL) != pdPASS) {
+        // Logging
+        loggerCritical("Failed to create task: \"taskUpdateLvgl\"!");
+
+        return false;
+    }
 
     // Was everything successful?
     initSuccessful_ = true;
@@ -676,16 +706,28 @@ void guiSetFuelLevelLitre(void *litres) {
 }
 
 void guiSetWaterTemperature(void *temp) {
-    // Set the new text
-    lv_label_set_text_fmt(tempLabel_, "%d", (int) temp);
+    // Try to get the semaphore mutex
+    if (xSemaphoreTake(semaphoreLvTaskHandle_, portMAX_DELAY) == pdTRUE) {
+        // Set the new text
+        lv_label_set_text_fmt(tempLabel_, "%d", (int) temp);
+        xSemaphoreGive(semaphoreLvTaskHandle_);
+    }
 }
 
 void guiSetSpeed(void *speed) {
-    // Set the new text
-    lv_label_set_text_fmt(speedLabel_, "%d", (int) speed);
+    // Try to get the semaphore mutex
+    if (xSemaphoreTake(semaphoreLvTaskHandle_, portMAX_DELAY) == pdTRUE) {
+        // Set the new text
+        lv_label_set_text_fmt(speedLabel_, "%d", (int) speed);
+        xSemaphoreGive(semaphoreLvTaskHandle_);
+    }
 }
 
 void guiSetRpm(void *rpm) {
-    // Set the new text
-    lv_label_set_text_fmt(rpmLabel_, "%d", (int) rpm);
+    // Try to get the semaphore mutex
+    if (xSemaphoreTake(semaphoreLvTaskHandle_, portMAX_DELAY) == pdTRUE) {
+        // Set the new text
+        lv_label_set_text_fmt(rpmLabel_, "%d", (int) rpm);
+        xSemaphoreGive(semaphoreLvTaskHandle_);
+    }
 }
